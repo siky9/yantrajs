@@ -84,17 +84,246 @@ internal static class YantraJsGenerator
             return null;
         }
 
-        Func<object, YantraJsState, object>? cloner = (Func<object, YantraJsState, object>?)YantraJsCache.GetOrAddClass(objType, t => GenerateCloner(t, true));
+        // Fast-path: if already cloned -> return cached clone
+        object? knownRef = jsState.GetKnownRef(obj);
+        if (knownRef is not null)
+        {
+            return knownRef;
+        }
 
+        // If there is no cloner (type considered safe to return as-is), return original object
+        Func<object, YantraJsState, object>? cloner = (Func<object, YantraJsState, object>?)YantraJsCache.GetOrAddClass(objType, t => GenerateCloner(t, true));
         if (cloner is null)
         {
             return obj;
         }
 
-        object? knownRef = jsState.GetKnownRef(obj);
-        return knownRef ?? cloner(obj, jsState);
+        if (ShouldUseGeneratedCloner(objType))
+        {
+            // delegate to generated cloner (preserves special logic and avoids problematic getters)
+            return cloner(obj, jsState);
+        }
+
+        // Iterative deep clone for user-defined types to avoid stack overflow on long chains / cycles.
+        object? rootShallow = CloneClassShallowAndTrack(obj, jsState);
+        if (rootShallow is null)
+        {
+            return null;
+        }
+
+        var stack = new Stack<(object From, object To, Type Type)>();
+        stack.Push((obj, rootShallow, objType));
+
+        while (stack.Count > 0)
+        {
+            var (fromObj, toObj, type) = stack.Pop();
+
+            Type? current = type;
+            while (current != null && current != typeof(ContextBoundObject))
+            {
+                foreach (FieldInfo field in current.GetDeclaredFields())
+                {
+                    ProcessField(field, fromObj, toObj, jsState, stack);
+                }
+
+                current = current.BaseType;
+            }
+        }
+
+        return rootShallow;
     }
-    
+
+    private static bool ShouldUseGeneratedCloner(Type objType)
+    {
+        if (RequiresSpecializedCloner(objType))
+        {
+            return true;
+        }
+
+        string? ns = objType.Namespace;
+        if (ns != null && (ns.StartsWith("System") || ns.StartsWith("Microsoft")))
+        {
+            return true;
+        }
+
+        string asmName = objType.Assembly.FullName ?? string.Empty;
+        if (asmName.IndexOf("Newtonsoft", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            asmName.IndexOf("NHibernate", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return true;
+        }
+
+        string tName = objType.Name;
+        if (tName.IndexOf("Immutable", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            tName.IndexOf("Concurrent", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return true;
+        }
+
+        return objType.GetInterfaces().Any(i => i.IsGenericType && (
+            i.GetGenericTypeDefinition() == typeof(IDictionary<,>) ||
+            i.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>) ||
+            i.GetGenericTypeDefinition() == typeof(ISet<>) ||
+            i.GetGenericTypeDefinition() == typeof(IEnumerable<>)
+        ));
+    }
+
+    private static void ProcessField(FieldInfo field, object fromObj, object toObj, YantraJsState jsState, Stack<(object From, object To, Type Type)> stack)
+    {
+        Type fieldType = field.FieldType;
+
+        // Delegate-typed fields: handle event backing fields differently than other delegates.
+        if (typeof(Delegate).IsAssignableFrom(fieldType))
+        {
+            HandleDelegateField(field, fromObj, toObj);
+            return;
+        }
+
+        // skip ignored types
+        if (YantraJsCache.IsTypeIgnored(fieldType))
+        {
+            object? defaultVal = fieldType.IsValueType ? Activator.CreateInstance(fieldType) : null;
+            if (field.IsInitOnly)
+            {
+                YantraJsExprGen.ForceSetField(field, toObj, defaultVal!);
+            }
+            else
+            {
+                field.SetValue(toObj, defaultVal);
+            }
+
+            return;
+        }
+
+        // safe to copy reference/value as-is
+        if (YantraJsSafeTypes.CanReturnSameObject(fieldType))
+        {
+            object? val = field.GetValue(fromObj);
+            if (field.IsInitOnly)
+            {
+                YantraJsExprGen.ForceSetField(field, toObj, val!);
+            }
+            else
+            {
+                field.SetValue(toObj, val);
+            }
+
+            return;
+        }
+
+        // value-type field -> use struct cloner
+        if (fieldType.IsValueType)
+        {
+            object? origVal = field.GetValue(fromObj);
+            if (origVal is null)
+            {
+                if (field.IsInitOnly)
+                {
+                    YantraJsExprGen.ForceSetField(field, toObj, null!);
+                }
+                else
+                {
+                    field.SetValue(toObj, null);
+                }
+            }
+            else
+            {
+                MethodInfo mi = YantraStatic.DeepClonerGeneratorMethods.CloneStructInternal.MakeGenericMethod(fieldType);
+                object? clonedVal = mi.Invoke(null, new object?[] { origVal, jsState });
+                if (field.IsInitOnly)
+                {
+                    YantraJsExprGen.ForceSetField(field, toObj, clonedVal!);
+                }
+                else
+                {
+                    field.SetValue(toObj, clonedVal);
+                }
+            }
+            return;
+        }
+
+        // reference type
+        object? fm = field.GetValue(fromObj);
+        if (fm is null)
+        {
+            if (field.IsInitOnly)
+            {
+                YantraJsExprGen.ForceSetField(field, toObj, null!);
+            }
+            else
+            {
+                field.SetValue(toObj, null);
+            }
+
+            return;
+        }
+
+        object? known = jsState.GetKnownRef(fm);
+        if (known is not null)
+        {
+            if (field.IsInitOnly)
+                YantraJsExprGen.ForceSetField(field, toObj, known);
+            else
+                field.SetValue(toObj, known);
+            return;
+        }
+
+        // not seen yet: create shallow clone, register and schedule processing
+        object? shallow = CloneClassShallowAndTrack(fm, jsState);
+        if (field.IsInitOnly)
+        {
+            YantraJsExprGen.ForceSetField(field, toObj, shallow!);
+        }
+        else
+        {
+            field.SetValue(toObj, shallow);
+        }
+
+        if (shallow is not null)
+        {
+            stack.Push((fm, shallow, fm.GetType()));
+        }
+    }
+
+    private static void HandleDelegateField(FieldInfo field, object fromObj, object toObj)
+    {
+        Type declaring = field.DeclaringType ?? field.ReflectedType!;
+        bool isEventField = IsEventBackingField(declaring, field.Name);
+        if (isEventField)
+        {
+            // clear event backing fields in the clone to avoid preserving subscribers
+            if (field.IsInitOnly)
+            {
+                YantraJsExprGen.ForceSetField(field, toObj, null!);
+            }
+            else
+            {
+                field.SetValue(toObj, null);
+            }
+        }
+        else
+        {
+            // preserve other delegate fields (copy reference) — needed for LazyRef and similar patterns
+            object? val = field.GetValue(fromObj);
+            if (field.IsInitOnly)
+            {
+                YantraJsExprGen.ForceSetField(field, toObj, val!);
+            }
+            else
+            {
+                field.SetValue(toObj, val);
+            }
+        }
+    }
+
+    private static bool IsEventBackingField(Type declaringType, string fieldName)
+    {
+        // Match event names to backing fields conservatively:
+        // If there is an event with the same name, treat the field as event backing field.
+        return declaringType.GetEvents(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                            .Any(e => e.Name == fieldName);
+    }
+
     internal static object? CloneClassShallowAndTrack(object? obj, YantraJsState jsState)
     {
         if (obj is null)
@@ -109,7 +338,6 @@ internal static class YantraJsGenerator
             return null;
         }
         
-
         if (YantraJsSafeTypes.CanReturnSameObject(objType) && !objType.IsValueType())
         {
             return obj;

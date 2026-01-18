@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.8.34511.84
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{DEADC0DE-BBAF-4287-8E1D-76D57ED97005}") = "YantraJs", "YantraJs\YantraJs.csproj", "{DEADC0DE-BBAF-4287-8E1D-76D57ED97005}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "YantraJs", "YantraJs\YantraJs.csproj", "{DEADC0DE-BBAF-4287-8E1D-76D57ED97005}"
 EndProject
-Project("{DEADC0DE-BBAF-4287-8E1D-76D57ED97006}") = "YantraJs.Tests", "YantraJs.Tests\YantraJs.Tests.csproj", "{DEADC0DE-BBAF-4287-8E1D-76D57ED97006}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "YantraJs.Tests", "YantraJs.Tests\YantraJs.Tests.csproj", "{DEADC0DE-BBAF-4287-8E1D-76D57ED97006}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,8 +15,12 @@ Global
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{DEADC0DE-BBAF-4287-8E1D-76D57ED97005}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{DEADC0DE-BBAF-4287-8E1D-76D57ED97005}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DEADC0DE-BBAF-4287-8E1D-76D57ED97005}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DEADC0DE-BBAF-4287-8E1D-76D57ED97005}.Release|Any CPU.Build.0 = Release|Any CPU
 		{DEADC0DE-BBAF-4287-8E1D-76D57ED97006}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{DEADC0DE-BBAF-4287-8E1D-76D57ED97006}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DEADC0DE-BBAF-4287-8E1D-76D57ED97006}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DEADC0DE-BBAF-4287-8E1D-76D57ED97006}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
